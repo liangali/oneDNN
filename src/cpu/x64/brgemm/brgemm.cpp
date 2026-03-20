@@ -507,7 +507,7 @@ status_t brgemm_desc_set_postops(brgemm_desc_t *brg,
             int mask = zp.get_mask(mem_arg);
             if (mask == 0) {
                 zp_type = brgemm_broadcast_t::per_tensor;
-            } else if (mask == (1 << 1)) {
+            } else if (mask == (1 << (dst_md->ndims - 1))) {
                 zp_type = brgemm_broadcast_t::per_n;
             } else {
                 return status::unimplemented;
