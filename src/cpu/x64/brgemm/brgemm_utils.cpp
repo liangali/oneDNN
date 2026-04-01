@@ -742,17 +742,20 @@ status_t brgemm_blocking_vmm_gemv(brgemm_desc_t *brg) {
         brg->ldb2_tail = brg->ldb % brg->ld_block2;
         assert(brg->ldb2_tail == 0);
 
-        brg->bd_block = simd_w;
+        const int bd_unroll = 8;
+        brg->bd_block = simd_w * bd_unroll;
         brg->bdb = brg->bcast_dim / brg->bd_block;
         brg->bdb_tail = brg->bcast_dim % brg->bd_block;
 
-        brg->rd_block = 1; // unroll
+        brg->rd_block = 1;
         brg->rdb = brg->reduce_dim / brg->rd_block;
         brg->rdb_tail = brg->reduce_dim % brg->rd_block;
 
-        printf("ld_block:%d, ldb:%d, ldb_tail:%d, ld_block2:%d, ldb2:%d, "
+        printf("load_dim:%d, bcast_dim:%d, reduce_dim:%d, ld_block:%d, ldb:%d, "
+               "ldb_tail:%d, ld_block2:%d, ldb2:%d, "
                "ldb2_tail:%d, bd_block:%d, bdb:%d, bdb_tail:%d, rd_block:%d, "
                "rdb:%d, rdb_tail:%d\n",
+                (int)brg->load_dim, (int)brg->bcast_dim, (int)brg->reduce_dim,
                 (int)brg->ld_block, (int)brg->ldb, (int)brg->ldb_tail,
                 (int)brg->ld_block2, (int)brg->ldb2, (int)brg->ldb2_tail,
                 (int)brg->bd_block, (int)brg->bdb, (int)brg->bdb_tail,

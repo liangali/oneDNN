@@ -282,11 +282,12 @@ private:
     Vmm accm(dim_t ld_block, dim_t bd, dim_t ld) {
         return Vmm(max_effective_vregs - 1 - (bd * ld_block + ld));
     }
+    const int bd_unroll = 8;
 
     Vmm bcst(dim_t bd = 0) {
-        if (brg.n_bcast_1_load || brg.is_gemv) {
-            dim_t idx = max_effective_vregs - 1 - (brg.ld_block2 * brg.bd_block)
-                    - bd;
+        if (brg.n_bcast_1_load || (brg.is_gemv && !brg.transA)) {
+            dim_t idx = max_effective_vregs - 1
+                    - (brg.ld_block2 * (brg.bd_block / bd_unroll)) - bd;
             assert(idx > 0);
             return Vmm(idx);
         } else
@@ -294,11 +295,11 @@ private:
     }
 
     Vmm load(dim_t ld = 0) {
-        if (brg.n_bcast_1_load || brg.is_gemv) {
+        if (brg.n_bcast_1_load || (brg.is_gemv && !brg.transA)) {
             return Vmm(0);
         } else {
-            dim_t idx = max_effective_vregs - 1 - (brg.ld_block2 * brg.bd_block)
-                    - ld;
+            dim_t idx = max_effective_vregs - 1
+                    - (brg.ld_block2 * (brg.bd_block / bd_unroll)) - ld;
             assert(idx > 0);
             return Vmm(idx);
         }
@@ -308,7 +309,8 @@ private:
         assert(IMPLICATION(!brg.is_tmm,
                 i >= 0
                         && i < max_effective_vregs
-                                        - brg.bd_block * brg.ld_block2));
+                                        - (brg.bd_block / bd_unroll)
+                                                * brg.ld_block2));
         return Vmm(i);
     }
 
@@ -1008,7 +1010,7 @@ void jit_brgemm_kernel_t<Wmm>::zero_accumulators(dim_t bd_block2,
             tilezero(Tmm(brg.get_C_tensor(bdb, idx, is_bdb_tail, is_ld_tail)));
         }
     } else {
-        dim_t bd_block = (is_bdb_tail) ? brg.bdb_tail : brg.bd_block;
+        dim_t bd_block = (is_bdb_tail) ? brg.bdb_tail : brg.bd_block / 4;
         for_(dim_t bd = 0; bd < bd_block; bd++)
         for (dim_t ld = 0; ld < ld_block2; ld++) {
             auto vmm = accm(ld_block2, bd, ld);
@@ -1720,14 +1722,29 @@ void jit_brgemm_kernel_t<Wmm>::store_accumulators_without_post_ops(
 
     if (brg.is_gemv && brg.transA) {
         auto acc = accm(1, 0, 0);
+        printf("is_ld_tail:%d\n", is_ld_tail);
         if (is_ld_tail) {
             maybe_set_avx_mask(true);
             vmaskmovps(ptr[reg_aux_D], vmm_tail_mask(), acc);
         } else {
-            uni_vmovups(ptr[reg_aux_D], acc);
+            for (dim_t bd = 0; bd < bd_unroll; bd++) {
+                uni_vmovups(ptr[reg_aux_D + bd * 8 * sizeof(float)],
+                        accm(1, bd, 0));
+            }
+#if 0
+            uni_vmovups(ptr[reg_aux_D + 0 * 8 * sizeof(float)], accm(1, 0, 0));
+            uni_vmovups(ptr[reg_aux_D + 1 * 8 * sizeof(float)], accm(1, 1, 0));
+            uni_vmovups(ptr[reg_aux_D + 2 * 8 * sizeof(float)], accm(1, 2, 0));
+            uni_vmovups(ptr[reg_aux_D + 3 * 8 * sizeof(float)], accm(1, 3, 0));
+
+            uni_vmovups(ptr[reg_aux_D + 4 * 8 * sizeof(float)], accm(1, 4, 0));
+            uni_vmovups(ptr[reg_aux_D + 5 * 8 * sizeof(float)], accm(1, 5, 0));
+            uni_vmovups(ptr[reg_aux_D + 6 * 8 * sizeof(float)], accm(1, 6, 0));
+            uni_vmovups(ptr[reg_aux_D + 7 * 8 * sizeof(float)], accm(1, 7, 0));
+#endif
         }
         return;
-    };
+    }
 
     if (brg.is_gemv) {
         for_(dim_t bd = 0; bd < bd_block; bd++)
@@ -2383,7 +2400,6 @@ void jit_brgemm_kernel_t<Wmm>::compute_int8_compensation(dim_t rd_loop,
 template <typename Wmm>
 void jit_brgemm_kernel_t<Wmm>::gemv_microkernel(
         bool is_bdb_tail, dim_t ld_block2, bool is_rd_tail, bool is_ld_tail) {
-
     if (!brg.transA) {
         maybe_set_avx_rd_tail_mask(is_rd_tail);
 
@@ -2427,47 +2443,41 @@ void jit_brgemm_kernel_t<Wmm>::gemv_microkernel(
     assert(ld_block2 == 1);
     assert(brg.rd_block == 1);
 
+    printf("is_bdb_tail:%d, brg.bdb_tail:%d\n", is_bdb_tail, brg.bdb_tail);
+
     vbroadcastss(bcst(), ptr[reg_aux_B]);
 
     if (is_bdb_tail) {
         maybe_set_avx_mask(true);
         vmaskmovps(load(), vmm_tail_mask(), ptr[reg_aux_A]);
+        // TODO: extend and fix mask initialization
     } else {
-        uni_vmovups(load(), ptr[reg_aux_A]);
-    }
-
-    uni_vfmadd231ps(accm(1, 0, 0), load(), bcst());
-
+        for (dim_t bd = 0; bd < bd_unroll; bd++) {
+            uni_vmovups(load(), ptr[reg_aux_A + bd * 8 * sizeof(float)]);
+            uni_vfmadd231ps(accm(1, bd, 0), load(), bcst());
+        }
 #if 0
-    assert(brg.is_gemv);
-    assert(brg.dt_a == data_type::f32);
-    assert(brg.bd_block == 1);
+        uni_vmovups(load(0), ptr[reg_aux_A + 0 * 8 * sizeof(float)]);
+        uni_vmovups(load(1), ptr[reg_aux_A + 1 * 8 * sizeof(float)]);
+        uni_vmovups(load(2), ptr[reg_aux_A + 2 * 8 * sizeof(float)]);
+        uni_vmovups(load(3), ptr[reg_aux_A + 3 * 8 * sizeof(float)]);
 
-    maybe_set_avx_mask(is_ld_tail);
-
-    assert(bd_block == 1);
-
-    for (dim_t ld = 0; ld < ld_block2; ld++) {
-        auto acc = accm(ld_block2, 0, ld);
-        uni_vxorps(acc, acc, acc);
+        uni_vmovups(load(4), ptr[reg_aux_A + 4 * 8 * sizeof(float)]);
+        uni_vmovups(load(5), ptr[reg_aux_A + 5 * 8 * sizeof(float)]);
+        uni_vmovups(load(6), ptr[reg_aux_A + 6 * 8 * sizeof(float)]);
+        uni_vmovups(load(7), ptr[reg_aux_A + 7 * 8 * sizeof(float)]);
+#endif
     }
+#if 0
+    uni_vfmadd231ps(accm(1, 0, 0), load(0), bcst());
+    uni_vfmadd231ps(accm(1, 1, 0), load(1), bcst());
+    uni_vfmadd231ps(accm(1, 2, 0), load(2), bcst());
+    uni_vfmadd231ps(accm(1, 3, 0), load(3), bcst());
 
-    for (dim_t ld = 0; ld < ld_block2; ld++) {
-        auto acc = accm(ld_block2, 0, ld);
-
-        uni_vxorps(acc, acc, acc);
-
-        vbroadcastss(bcst(), ptr[reg_aux_B]);
-
-        auto a_addr = ptr[reg_aux_A + ld * brg.ld_block * brg.typesize_A];
-        printf("is_ld_tail:%d, ld_block2:%d\n", is_ld_tail, (int)ld_block2);
-        if (is_ld_tail && ld == ld_block2 - 1)
-            vmaskmovps(load(), vmm_tail_mask(), a_addr);
-        else
-            uni_vmovups(load(), a_addr);
-
-        uni_vfmadd231ps(acc, load(), bcst());
-    }
+    uni_vfmadd231ps(accm(1, 4, 0), load(4), bcst());
+    uni_vfmadd231ps(accm(1, 5, 0), load(5), bcst());
+    uni_vfmadd231ps(accm(1, 6, 0), load(6), bcst());
+    uni_vfmadd231ps(accm(1, 7, 0), load(7), bcst());
 #endif
 }
 
@@ -3002,6 +3012,7 @@ void jit_brgemm_kernel_t<Wmm>::bdb_loop() {
     auto bdb_loop_avx512 = [&](bool skip_accumulation) {
         Label bdb_loop_end_label, no_vpad_label;
         if (vpad_exist) {
+            printf("vpad exists\n");
             // max_top_vp is restricted by bd_block due to
             // brgemm_kernel implementation. TODO: remove this restriction
             assert(brg.brgattr.max_top_vpad <= brg.bd_block
@@ -3053,6 +3064,7 @@ void jit_brgemm_kernel_t<Wmm>::bdb_loop() {
             if (brg.type == brgemm_strd) jmp(bdb_loop_end_label);
         }
         if (!vpad_exist || brg.type == brgemm_strd) {
+            printf("vpad_doesn't exist\n");
             // for brgemm_strd batch may be null so we need this code path
             L_aligned(no_vpad_label, 64);
             if (brg.bdb > 0) {
