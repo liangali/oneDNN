@@ -742,8 +742,8 @@ status_t brgemm_blocking_vmm_gemv(brgemm_desc_t *brg) {
         brg->ldb2_tail = brg->ldb % brg->ld_block2;
         assert(brg->ldb2_tail == 0);
 
-        const int bd_unroll = 8;
-        brg->bd_block = simd_w * bd_unroll;
+        brg->gemv_transa_bd_unroll = 8;
+        brg->bd_block = simd_w * brg->gemv_transa_bd_unroll;
         brg->bdb = brg->bcast_dim / brg->bd_block;
         brg->bdb_tail = brg->bcast_dim % brg->bd_block;
 
@@ -751,15 +751,21 @@ status_t brgemm_blocking_vmm_gemv(brgemm_desc_t *brg) {
         brg->rdb = brg->reduce_dim / brg->rd_block;
         brg->rdb_tail = brg->reduce_dim % brg->rd_block;
 
-        printf("load_dim:%d, bcast_dim:%d, reduce_dim:%d, ld_block:%d, ldb:%d, "
+        brg->gemv_tail = brg->transA
+                ? brg->bcast_dim % brg->gemv_transa_bd_unroll
+                : brg->rdb_tail;
+
+        printf("load_dim:%d, bcast_dim:%d, reduce_dim:%d, gemv_tail:%d, "
+               "ld_block:%d, ldb:%d, "
                "ldb_tail:%d, ld_block2:%d, ldb2:%d, "
                "ldb2_tail:%d, bd_block:%d, bdb:%d, bdb_tail:%d, rd_block:%d, "
                "rdb:%d, rdb_tail:%d\n",
                 (int)brg->load_dim, (int)brg->bcast_dim, (int)brg->reduce_dim,
-                (int)brg->ld_block, (int)brg->ldb, (int)brg->ldb_tail,
-                (int)brg->ld_block2, (int)brg->ldb2, (int)brg->ldb2_tail,
-                (int)brg->bd_block, (int)brg->bdb, (int)brg->bdb_tail,
-                (int)brg->rd_block, (int)brg->rdb, (int)brg->rdb_tail);
+                (int)brg->gemv_tail, (int)brg->ld_block, (int)brg->ldb,
+                (int)brg->ldb_tail, (int)brg->ld_block2, (int)brg->ldb2,
+                (int)brg->ldb2_tail, (int)brg->bd_block, (int)brg->bdb,
+                (int)brg->bdb_tail, (int)brg->rd_block, (int)brg->rdb,
+                (int)brg->rdb_tail);
 
         return status::success;
     }

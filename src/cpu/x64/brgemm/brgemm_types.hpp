@@ -318,6 +318,9 @@ struct brgemm_desc_t {
     int LDA2 {0}, LDB2 {0}, LDC2_M {0}, LDC2_N {0};
     bool is_blocked = false;
 
+    int gemv_transa_bd_unroll = 0;
+    int gemv_tail = 0;
+
     int bdb = 0, bd_block = 0, bdb_tail = 0;
     int bdb2 = 0, bd_block2 = 0, bdb2_tail = 0;
     int ldb = 0, ld_block = 0, ldb_tail = 0;
@@ -374,6 +377,12 @@ struct brgemm_desc_t {
     void set_dst_md(const memory_desc_t *pdst_md);
     const primitive_attr_t *attr() const { return attr_; }
     const memory_desc_t *dst_md() const { return dst_md_; }
+
+    dim_t gemv_bd_block() const {
+        assert(is_gemv);
+        if (!is_gemv) return 0;
+        return transA ? gemv_transa_bd_unroll : bd_block;
+    }
 
     // return 'true' when FP8 MAC is not natively supported by the CPU ISA
     bool is_fp8_via_convert() const {
