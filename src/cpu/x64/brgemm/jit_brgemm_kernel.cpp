@@ -1743,21 +1743,20 @@ void jit_brgemm_kernel_t<Wmm>::store_accumulators_without_post_ops(
     if (!brg.brgattr.hint_loop_store_prefetch) prefetchw(ptr[reg_aux_C]);
 
     if (brg.is_gemv && brg.transA) {
-        dim_t bd = 0;
-        const dim_t bd_block = is_bdb_tail ? brg.bdb_tail / brg.gemv_bd_block()
-                                           : brg.gemv_bd_block();
 
-        for (bd = 0; bd < bd_block; bd++) {
-            auto acc = gemv_accm(bd);
-            uni_vmovups(ptr[reg_aux_D + bd * 8 * sizeof(float)], acc);
+        const dim_t gemv_bd_block
+                = is_bdb_tail ? brg.gemv_bdb_tail() : brg.gemv_bd_block();
+
+        for (dim_t gemv_bd = 0; gemv_bd < gemv_bd_block; gemv_bd++) {
+            auto acc = gemv_accm(gemv_bd);
+            uni_vmovups(ptr[reg_aux_D + gemv_bd * 8 * sizeof(float)], acc);
         }
 
-        if (is_bdb_tail && brg.bdb_tail % brg.gemv_bd_block() > 0) {
+        if (is_bdb_tail && brg.gemv_tail > 0) {
             maybe_set_gemv_avx_tail_mask(true);
-            auto acc = gemv_accm(bd);
-            vmaskmovps(ptr[reg_aux_D + bd * 8 * sizeof(float)], vmm_tail_mask(),
-                    acc);
-            (void)acc;
+            auto acc = gemv_accm(gemv_bd_block);
+            vmaskmovps(ptr[reg_aux_D + gemv_bd_block * 8 * sizeof(float)],
+                    vmm_tail_mask(), acc);
         }
 
         return;
@@ -2473,36 +2472,22 @@ void jit_brgemm_kernel_t<Wmm>::gemv_microkernel(
     // brg.gemv_bd_block() - lvl 2
     // brg.gemv_bdb_tail() - lvl 2: return brg.bdb_tail / simd_w?
 
-    // const dim_t bd_block = is_bdb_tail ? brg.gemv_bdb_tail()
-    //                                    : brg.gemv_bd_block();
-    const dim_t bd_block = is_bdb_tail ? brg.bdb_tail / brg.gemv_bd_block()
-                                       : brg.gemv_bd_block();
+    const dim_t gemv_bd_block
+            = is_bdb_tail ? brg.gemv_bdb_tail() : brg.gemv_bd_block();
 
-    dim_t bd = 0;
-    for (bd = 0; bd < bd_block; bd++) {
-        uni_vmovups(gemv_load_a(), ptr[reg_aux_A + bd * 8 * sizeof(float)]);
-        uni_vfmadd231ps(gemv_accm(bd), gemv_load_a(), gemv_load_b());
+    for (dim_t gemv_bd = 0; gemv_bd < gemv_bd_block; gemv_bd++) {
+        uni_vmovups(
+                gemv_load_a(), ptr[reg_aux_A + gemv_bd * 8 * sizeof(float)]);
+        uni_vfmadd231ps(gemv_accm(gemv_bd), gemv_load_a(), gemv_load_b());
     }
 
     // XXX: use gemv_tail?
-    if (is_bdb_tail && brg.bdb_tail % brg.gemv_bd_block() > 0) {
+    if (is_bdb_tail && brg.gemv_tail > 0) {
         maybe_set_gemv_avx_tail_mask(true);
-        printf("is_bdb_tail:%d,  brg.bdb_tail %% brg.gemv_bd_block():%d\n",
-                is_bdb_tail, (int)(brg.bdb_tail % brg.gemv_bd_block()));
         vmaskmovps(gemv_load_a(), vmm_tail_mask(),
-                ptr[reg_aux_A + bd * 8 * sizeof(float)]);
-        uni_vfmadd231ps(gemv_accm(bd), gemv_load_a(), gemv_load_b());
+                ptr[reg_aux_A + gemv_bd_block * 8 * sizeof(float)]);
+        uni_vfmadd231ps(gemv_accm(gemv_bd_block), gemv_load_a(), gemv_load_b());
     }
-#if 0
-    for (dim_t bd = 0; bd < brg.gemv_bd_block(); bd++) {
-        if (is_bdb_tail) {
-            vmaskmovps(gemv_load_a(), vmm_tail_mask(), ptr[reg_aux_A]);
-        } else {
-            uni_vmovups(gemv_load_a(), ptr[reg_aux_A + bd * 8 * sizeof(float)]);
-        }
-        uni_vfmadd231ps(gemv_accm(bd), gemv_load_a(), gemv_load_b());
-    }
-#endif
 }
 
 template <typename Wmm>
