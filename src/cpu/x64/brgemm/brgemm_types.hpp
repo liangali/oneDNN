@@ -378,12 +378,29 @@ struct brgemm_desc_t {
     const primitive_attr_t *attr() const { return attr_; }
     const memory_desc_t *dst_md() const { return dst_md_; }
 
+    // GEMV logical bd block used by GEMV-specific kernel code.
+    //
+    // non-transA:
+    //   - same as `bd_block`
+    //
+    // transA:
+    //  - number of vector accumulators updated per reduction step
+    //  - equal to `gemv_transa_bd_unroll`
     dim_t gemv_bd_block() const {
         assert(is_gemv);
         if (!is_gemv) return 0;
         return transA ? gemv_transa_bd_unroll : bd_block;
     }
 
+    // GEMV bdb tail used by GEMV-specific kernel code.
+    //
+    // non-transA:
+    //   - same as `bdb_tail`
+    //
+    // transA:
+    //   - number of full vector accumulators in the tail block
+    //   - the remaining first-level register tail is stored separately in
+    //     `gemv_tail`
     dim_t gemv_bdb_tail() const {
         assert(is_gemv);
         if (!is_gemv) return 0;
