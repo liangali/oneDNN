@@ -184,7 +184,11 @@ auto cases_expect_to_fail = ::testing::Values(
         // nothing can be done with zero memory desc
         params_t {{}, {}, UNI_DIRECTION, dnnl_invalid_arguments},
         // run-time dims are not supported
-        params_t {{{DNNL_RUNTIME_DIM_VAL}, {1}}, {{DNNL_RUNTIME_DIM_VAL}, {1}}, UNI_DIRECTION, dnnl_invalid_arguments}
+        params_t {{{DNNL_RUNTIME_DIM_VAL}, {1}}, {{DNNL_RUNTIME_DIM_VAL}, {1}}, UNI_DIRECTION, dnnl_invalid_arguments},
+        // overflow in tensor dimensions for blocking descriptor
+        params_t {{{(dnnl::impl::dim_t{1} << 62), 4}, fmt::ab}, {{(dnnl::impl::dim_t{1} << 62), 4}, fmt::ab}, UNI_DIRECTION, dnnl_invalid_arguments},
+        // overflow in tensor dimensions for memory creation with strides
+        params_t {{{(dnnl::impl::dim_t{1} << 62), 4}, {4,1}}, {{(dnnl::impl::dim_t{1} << 62), 4}, {4,1}}, UNI_DIRECTION, dnnl_invalid_arguments}        
         );
 
 auto cases_zero_dim = ::testing::Values(
