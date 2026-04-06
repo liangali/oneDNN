@@ -384,6 +384,12 @@ struct brgemm_desc_t {
         return transA ? gemv_transa_bd_unroll : bd_block;
     }
 
+    dim_t gemv_bdb_tail() const {
+        assert(is_gemv);
+        if (!is_gemv) return 0;
+        return transA ? bdb_tail % gemv_transa_bd_unroll : bdb_tail;
+    }
+
     // return 'true' when FP8 MAC is not natively supported by the CPU ISA
     bool is_fp8_via_convert() const {
         return is_fp8

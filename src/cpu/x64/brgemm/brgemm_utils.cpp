@@ -751,9 +751,7 @@ status_t brgemm_blocking_vmm_gemv(brgemm_desc_t *brg) {
         brg->rdb = brg->reduce_dim / brg->rd_block;
         brg->rdb_tail = brg->reduce_dim % brg->rd_block;
 
-        brg->gemv_tail = brg->transA
-                ? brg->bcast_dim % brg->gemv_transa_bd_unroll
-                : brg->rdb_tail;
+        brg->gemv_tail = brg->transA ? brg->bdb_tail % simd_w : brg->rdb_tail;
 
         printf("load_dim:%d, bcast_dim:%d, reduce_dim:%d, gemv_tail:%d, "
                "ld_block:%d, ldb:%d, "
