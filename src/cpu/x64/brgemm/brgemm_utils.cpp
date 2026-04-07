@@ -784,64 +784,64 @@ status_t brgemm_blocking_tmm(brgemm_desc_t *brg) {
 status_t brgemm_blocking_vmm_gemv(brgemm_desc_t *brg) {
     const int simd_w = 8;
 
-    if (::getenv("USE_GEMV")) {
-        assert(brg->transA);
+    assert(utils::one_of(brg->isa_impl, avx2, avx2_vnni, avx2_vnni_2));
+    assert(brg->load_dim == 1);
 
+    // Blocking parameters for the not transposed case.
+    if (!brg->transA) {
         brg->ld_block = 1;
         brg->ldb = brg->load_dim / brg->ld_block;
         brg->ldb_tail = brg->load_dim % brg->ld_block;
+        assert(brg->ldb_tail == 0);
 
         brg->ld_block2 = 1;
         brg->ldb2 = brg->ldb / brg->ld_block2;
         brg->ldb2_tail = brg->ldb % brg->ld_block2;
         assert(brg->ldb2_tail == 0);
 
-        brg->gemv_transa_bd_unroll = 8;
-        brg->bd_block = simd_w * brg->gemv_transa_bd_unroll;
+        brg->bd_block = 8;
         brg->bdb = brg->bcast_dim / brg->bd_block;
         brg->bdb_tail = brg->bcast_dim % brg->bd_block;
 
-        brg->rd_block = 1;
+        brg->rd_block = simd_w;
         brg->rdb = brg->reduce_dim / brg->rd_block;
         brg->rdb_tail = brg->reduce_dim % brg->rd_block;
-
-        brg->gemv_tail = brg->transA ? brg->bdb_tail % simd_w : brg->rdb_tail;
-
-        printf("load_dim:%d, bcast_dim:%d, reduce_dim:%d, gemv_tail:%d, "
-               "ld_block:%d, ldb:%d, "
-               "ldb_tail:%d, ld_block2:%d, ldb2:%d, "
-               "ldb2_tail:%d, bd_block:%d, bdb:%d, bdb_tail:%d, rd_block:%d, "
-               "rdb:%d, rdb_tail:%d\n",
-                (int)brg->load_dim, (int)brg->bcast_dim, (int)brg->reduce_dim,
-                (int)brg->gemv_tail, (int)brg->ld_block, (int)brg->ldb,
-                (int)brg->ldb_tail, (int)brg->ld_block2, (int)brg->ldb2,
-                (int)brg->ldb2_tail, (int)brg->bd_block, (int)brg->bdb,
-                (int)brg->bdb_tail, (int)brg->rd_block, (int)brg->rdb,
-                (int)brg->rdb_tail);
 
         return status::success;
     }
 
-    assert(utils::one_of(brg->isa_impl, avx2, avx2_vnni, avx2_vnni_2));
-    assert(brg->load_dim == 1);
-
+    // Blocking parameters for the transposed case.
     brg->ld_block = 1;
     brg->ldb = brg->load_dim / brg->ld_block;
     brg->ldb_tail = brg->load_dim % brg->ld_block;
-    assert(brg->ldb_tail == 0);
 
     brg->ld_block2 = 1;
     brg->ldb2 = brg->ldb / brg->ld_block2;
     brg->ldb2_tail = brg->ldb % brg->ld_block2;
     assert(brg->ldb2_tail == 0);
 
-    brg->bd_block = 8;
+    brg->gemv_transa_bd_unroll = 8;
+    brg->bd_block = simd_w * brg->gemv_transa_bd_unroll;
     brg->bdb = brg->bcast_dim / brg->bd_block;
     brg->bdb_tail = brg->bcast_dim % brg->bd_block;
 
-    brg->rd_block = simd_w;
+    brg->rd_block = 1;
     brg->rdb = brg->reduce_dim / brg->rd_block;
     brg->rdb_tail = brg->reduce_dim % brg->rd_block;
+
+    brg->gemv_tail = brg->transA ? brg->bdb_tail % simd_w : brg->rdb_tail;
+
+    printf("load_dim:%d, bcast_dim:%d, reduce_dim:%d, gemv_tail:%d, "
+           "ld_block:%d, ldb:%d, "
+           "ldb_tail:%d, ld_block2:%d, ldb2:%d, "
+           "ldb2_tail:%d, bd_block:%d, bdb:%d, bdb_tail:%d, rd_block:%d, "
+           "rdb:%d, rdb_tail:%d\n",
+            (int)brg->load_dim, (int)brg->bcast_dim, (int)brg->reduce_dim,
+            (int)brg->gemv_tail, (int)brg->ld_block, (int)brg->ldb,
+            (int)brg->ldb_tail, (int)brg->ld_block2, (int)brg->ldb2,
+            (int)brg->ldb2_tail, (int)brg->bd_block, (int)brg->bdb,
+            (int)brg->bdb_tail, (int)brg->rd_block, (int)brg->rdb,
+            (int)brg->rdb_tail);
 
     return status::success;
 }
