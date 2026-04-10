@@ -2450,7 +2450,7 @@ void jit_brgemm_kernel_t<Wmm>::gemv_microkernel(
             for (dim_t bd = 0; bd < bd_block; bd++) {
                 load_A(gemv_load_a(), bd, rd);
                 auto acc = gemv_accm(bd);
-                uni_vfmadd231ps(acc, bcst(), load());
+                uni_vfmadd231ps(acc, gemv_load_a(), gemv_load_b());
             }
         }
         return;

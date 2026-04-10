@@ -33,6 +33,14 @@ namespace matmul {
 
 constexpr int max_batch_ndims = DNNL_MAX_NDIMS - 2;
 
+enum class gemv_strategy_t {
+    none,
+    n1_A_plain,
+    n1_A_trans,
+    m1_B_plain,
+    m1_B_trans
+};
+
 struct brgemm_matmul_bcast_desc_t {
 
     brgemm_matmul_bcast_desc_t()
@@ -261,7 +269,9 @@ struct brgemm_matmul_conf_t {
     // is transposed.
     // TODO: Generalize when a new code path to support M=1, when B is plain
     // is added.
+    gemv_strategy_t gemv_strategy {};
     bool gemv_swap_a_b = false;
+    dim_t gemv_lda = 0;
 
     inline bool lda_big_pow2() const {
         const dim_t big_stride_threshold_in_bytes = 8192;
@@ -424,6 +434,9 @@ struct brgemm_matmul_conf_utils_t {
 
     format_tag_t get_gemv_A_tag(const memory_desc_t &A_md) const;
     format_tag_t get_gemv_B_tag(const memory_desc_t &B_md) const;
+
+    gemv_strategy_t get_gemv_strategy(
+            format_tag_t A_tag, format_tag_t B_tag) const;
 
 private:
     brgemm_matmul_conf_t &bgmmc;

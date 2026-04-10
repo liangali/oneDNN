@@ -81,11 +81,45 @@ int get_brg_kernel_index(const brgemm_matmul_conf_t &bgmmc, bool is_bs_tail,
     if (bgmmc.gemv_swap_a_b) std::swap(vM, vN);
 
     auto vK = (is_K_tail) ? bgmmc.K_tail : bgmmc.K_blk;
-    if (vM == 0 || vN == 0 || vK == 0 || bs == 0 || bgmmc.LDA < vK
-            || (bgmmc.LDB < vN && !bgmmc.is_amx)
-            || ((bgmmc.LDC < vN && !bgmmc.is_amx)
-                    && !is_runtime_value(bgmmc.LDC)))
-        return -1;
+
+    //    printf("vN:%d, vK:%d, vM:%d, bgmmc.LDA:%d, bgmmc.LDB:%d, "
+    //           "bgmmc.LDC:%d\n",
+    //            (int)vN, (int)vK, (int)vM, (int)bgmmc.LDA, (int)bgmmc.LDB,
+    //            (int)bgmmc.LDC);
+
+    if (vM == 0 || vN == 0 || vK == 0 || bs == 0) return -1;
+
+    if (bgmmc.is_gemv) { /////////////////////////////////
+        const bool swap = bgmmc.gemv_swap_a_b;
+        // TODO: use strategies to validate gemv_lda!
+
+        // GEMV reinterpretation (do not rely on swapped vM and vN for clarity)
+        const dim_t gemv_m = swap ? vN : vM;
+        //        const dim_t gemv_k = vK;
+        //printf("swap:%d, gemv_m:%d, gemv_k%d\n", swap, (int)gemv_m, (int)gemv_k);
+
+        //        const bool use_transa = utils::one_of(bgmmc.gemv_strategy,
+        //                gemv_strategy_t::n1_A_trans, gemv_strategy_t::m1_B_plain);
+        //        const dim_t matrix_ld_req = use_transa ? gemv_m : gemv_k;
+        //printf("use_transa:%d, matrix_ld_req:%d, bgmmc.LDA:%d, bgmmc.LDB:%d\n", use_transa, (int)matrix_ld_req, (int)bgmmc.LDA, (int)bgmmc.LDB);
+        //        if (!swap) {
+        //            if (bgmmc.LDA < matrix_ld_req) return -1;
+        //        } else {
+        //            if (!bgmmc.is_amx && bgmmc.LDB < matrix_ld_req) return -1;
+        //        }
+
+        const dim_t gemv_ldc_req = swap ? gemv_m : 1;
+        //printf("gemv_ldc_req:%d, bgmmc.LDC:%d\n", (int)gemv_ldc_req, (int)bgmmc.LDC);
+        if (!bgmmc.is_amx && !is_runtime_value(bgmmc.LDC)
+                && bgmmc.LDC < gemv_ldc_req)
+            return -1;
+    } else {
+        if (vM == 0 || vN == 0 || vK == 0 || bs == 0 || bgmmc.LDA < vK
+                || (bgmmc.LDB < vN && !bgmmc.is_amx)
+                || ((bgmmc.LDC < vN && !bgmmc.is_amx)
+                        && !is_runtime_value(bgmmc.LDC)))
+            return -1;
+    }
 
     if (is_prefetching && !bgmmc.need_prefetch_a && !bgmmc.need_prefetch_b) {
         return -1;
@@ -387,21 +421,23 @@ status_t brgemm_matmul_t<isa>::pd_t::init(engine_t *engine) {
         const auto kernel_isa = i_M == max_m_ker_idx - 1 ? backup_isa : isa;
 
         if (bgmmc_.is_gemv) {
-            printf("bgmmc_.gemv_swap_a_b:%d\n", bgmmc_.gemv_swap_a_b);
             const bool swap_a_b = bgmmc_.gemv_swap_a_b;
             const dim_t gemv_m = swap_a_b ? vN : vM;
             const bool treat_y_as_row = swap_a_b;
-            const bool transA = swap_a_b;
+            const bool transA = utils::one_of(bgmmc_.gemv_strategy,
+                    gemv_strategy_t::n1_A_trans, gemv_strategy_t::m1_B_plain);
+            printf("transA:%d\n", transA);
+            printf("bgmmc_.gemv_swap_a_b:%d\n", bgmmc_.gemv_swap_a_b);
+            printf("----- LDA:%d, LDB:%d\n", (int)LDA, (int)bgmmc_.LDB);
+            printf("---- gemv_m:%d, vK:%d, gemv_lda:%d\n", (int)gemv_m, (int)vK,
+                    (int)bgmmc_.gemv_lda);
 
             const auto dt_a = swap_a_b ? bgmmc_.wei_dt : bgmmc_.src_dt;
             const auto dt_x = swap_a_b ? bgmmc_.src_dt : bgmmc_.wei_dt;
-            const dim_t gemv_lda = swap_a_b ? bgmmc_.LDB : LDA;
 
-            printf("gemv_m:%d, vK:%d, gemv_lda:%d\n", (int)gemv_m, (int)vK,
-                    (int)gemv_lda);
             CHECK(brgemv_desc_init(&brg, kernel_isa, bgmmc_.brg_type, dt_a,
-                    dt_x, transA, alpha, vbeta, gemv_lda, bgmmc_.LDC, gemv_m,
-                    vK, treat_y_as_row));
+                    dt_x, transA, alpha, vbeta, bgmmc_.gemv_lda, bgmmc_.LDC,
+                    gemv_m, vK, treat_y_as_row));
         } else {
             CHECK(brgemm_desc_init(&brg, kernel_isa, bgmmc_.brg_type,
                     bgmmc_.src_dt, bgmmc_.wei_dt, false, false,
