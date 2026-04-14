@@ -868,6 +868,8 @@ struct matmul_avx512_blocking_params_t {
                         || bgmmc.treat_A_as_plain
                 ? get_actual_lda(bgmmc.use_buffer_a, bgmmc.tr_a_dt_sz)
                 : bgmmc.A_strides[1] / bgmmc.a_dt_sz;
+
+        if (bgmmc.is_gemv) bgmmc.LDA = bgmmc.gemv_lda;
         printf("update_configuration:bgmmc.LDA:%d, bgmmc.A_strides[1] / "
                "bgmmc.a_dt_sz:%d, get_actual_lda:%d\n",
                 (int)bgmmc.LDA, (int)(bgmmc.A_strides[1] / bgmmc.a_dt_sz),
@@ -1268,6 +1270,7 @@ status_t compute_blocking_heuristic(brgemm_matmul_conf_t &bgmmc,
         best_blocking.update_configuration(bgmmc);
 
     } else if (is_superset(bm_conf_utils.get_isa(), avx512_core)) {
+        printf("WTF!!!!!!!!!!!!!!!!!!!!!!!!\n");
         // TODO:
         // *) adjust K_BLK using 'rnd_up(bgmmc.K, bgmmc.required_k_granularity)'
         //    for non-f32 datatypes.
@@ -1689,6 +1692,7 @@ status_t init_brgemm_matmul_conf(cpu_isa_t isa, brgemm_matmul_conf_t &bgmmc,
         bgmmc.M *= bgmmc.batch;
         bgmmc.batch = 1;
     }
+    printf("merge_batch_dims_into_M:%d\n", merge_batch_dims_into_M);
 
     // runtime A stride wrt M dimension is not acceptable
     VCONDCHECK_BG(!is_runtime_value(helper.get_a_stride(bgmmc.ndims - 2)),
@@ -1808,6 +1812,10 @@ status_t init_brgemm_matmul_conf(cpu_isa_t isa, brgemm_matmul_conf_t &bgmmc,
                 break;
             default: assert(!"unknown gemv strategy");
         }
+        printf("bgmmc.gemv_lda:%d, bgmmc.A_strides[0]:%d, "
+               "bgmmc.A_strides[1]:%d\n",
+                (int)bgmmc.gemv_lda, (int)bgmmc.A_strides[0],
+                (int)bgmmc.A_strides[1]);
     }
 
     // BF32 'Hint' Heuristic:

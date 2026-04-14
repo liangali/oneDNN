@@ -807,6 +807,8 @@ status_t brgemm_blocking_vmm_gemv(brgemm_desc_t *brg) {
         brg->rdb = brg->reduce_dim / brg->rd_block;
         brg->rdb_tail = brg->reduce_dim % brg->rd_block;
 
+        brg->gemv_tail = brg->rdb_tail;
+
         return status::success;
     }
 
@@ -829,7 +831,7 @@ status_t brgemm_blocking_vmm_gemv(brgemm_desc_t *brg) {
     brg->rdb = brg->reduce_dim / brg->rd_block;
     brg->rdb_tail = brg->reduce_dim % brg->rd_block;
 
-    brg->gemv_tail = brg->transA ? brg->bdb_tail % simd_w : brg->rdb_tail;
+    brg->gemv_tail = brg->bdb_tail % simd_w;
 
     printf("load_dim:%d, bcast_dim:%d, reduce_dim:%d, gemv_tail:%d, "
            "ld_block:%d, ldb:%d, "
@@ -1063,7 +1065,7 @@ status_t init_brgemm_conf(brgemm_desc_t *brg, cpu_isa_t isa,
         impl::data_type_t dt_b, brgemm_layout_t layout, float alpha, float beta,
         dim_t LDA, dim_t LDB, dim_t LDC, dim_t M, dim_t N, dim_t K,
         const brgemm_strides_t *strides, bool is_bf32, bool is_tf32) {
-
+    printf("=====init_brgemm_conf: alpha:%f, beta:%f\n", alpha, beta);
     init_common_conf(brg, type, alpha, beta, strides);
 
     brg->layout = layout;
