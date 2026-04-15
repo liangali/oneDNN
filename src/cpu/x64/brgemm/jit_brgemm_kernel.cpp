@@ -526,12 +526,18 @@ dim_t jit_brgemm_kernel_t<Wmm>::B_offset(
 
 template <typename Wmm>
 dim_t jit_brgemm_kernel_t<Wmm>::C_offset(dim_t bd, dim_t ld) const noexcept {
+    if (brg.is_gemv && brg.transA)
+        return brg.typesize_C * bd * (brg.bd_block / brg.gemv_bd_block());
+
     const auto bd_shift = brg.is_runtime_ldc ? 0 : bd * brg.LDC;
     return brg.typesize_C * (bd_shift + ld * brg.ld_block);
 }
 
 template <typename Wmm>
 dim_t jit_brgemm_kernel_t<Wmm>::D_offset(dim_t bd, dim_t ld) const noexcept {
+    if (brg.is_gemv && brg.transA)
+        return brg.typesize_D * bd * (brg.bd_block / brg.gemv_bd_block());
+
     const auto bd_shift = brg.is_runtime_ldd ? 0 : bd * brg.LDD;
     return brg.typesize_D * (bd_shift + ld * brg.ld_block);
 }
@@ -1477,7 +1483,6 @@ void jit_brgemm_kernel_t<Wmm>::store_accumulators_apply_post_ops(dim_t bd_block,
     }
 
     if (brg.with_bias) reg_aux_bias.restore();
-
     if (brg.is_fp8_via_convert()) reg64_fp8_aux.save();
     for (dim_t ld = 0; ld < ld_block2; ld++) {
         auto vmm_bias = vmm_tmp(0);
@@ -1492,13 +1497,28 @@ void jit_brgemm_kernel_t<Wmm>::store_accumulators_apply_post_ops(dim_t bd_block,
             auto vmm = accm(ld_block2, bd, ld);
             if (dq2ps_required && !dq2ps_cvt_done) uni_vcvtdq2ps(vmm, vmm);
             if (brg.with_bias) {
-                if (!brg.treat_y_as_row) {
-                    uni_vaddps(vmm, vmm, vmm_bias);
+                if (brg.is_gemv) {
+                    if (!brg.treat_y_as_row && !brg.transA) {
+                        uni_vaddps(vmm, vmm, vmm_bias);
+                    } else if (brg.treat_y_as_row && !brg.transA) {
+                        auto ptr_bias = ptr[reg_aux_bias + bias_offset(bd)];
+                        uni_vmovss(Xmm(vmm_bias.getIdx()), ptr_bias);
+                        uni_vaddss(
+                                Xmm(vmm.getIdx()), Xmm(vmm.getIdx()), vmm_bias);
+                    } else if (!brg.treat_y_as_row && brg.transA) {
+                        vbroadcastss(
+                                vmm_bias, ptr[reg_aux_bias + bias_offset(0)]);
+                        uni_vaddps(vmm, vmm, vmm_bias);
+                    } else if (brg.treat_y_as_row && brg.transA) {
+                        //set_breakpoint();
+                        auto ptr_bias
+                                = ptr[reg_aux_bias + bd * sizeof(float) * 8];
+                        cvt2ps(brg.dt_bias, vmm_bias, ptr_bias, true, false,
+                                k_mask, 8 /* infer */);
+                        uni_vaddps(vmm, vmm, vmm_bias);
+                    }
                 } else {
-                    // for gemv when !transA and !treat_y_as_row we have 1 element per register and we need to apply each element of bias to the corresponding acumulator (because we can't use vector instructions)
-                    auto ptr_bias = ptr[reg_aux_bias + bias_offset(bd)];
-                    uni_vmovss(Xmm(vmm_bias.getIdx()), ptr_bias);
-                    uni_vaddss(Xmm(vmm.getIdx()), Xmm(vmm.getIdx()), vmm_bias);
+                    uni_vaddps(vmm, vmm, vmm_bias);
                 }
             }
         }
@@ -1511,7 +1531,7 @@ void jit_brgemm_kernel_t<Wmm>::store_accumulators_apply_post_ops(dim_t bd_block,
             cvt2ps(brg.dt_bias, vmm_bias, ptr_bias, true, false, k_mask,
                     brg.gemv_tail);
             //set_breakpoint();
-            uni_vaddps(Xmm(vmm.getIdx()), Xmm(vmm.getIdx()), vmm_bias);
+            uni_vaddps(vmm, vmm, vmm_bias);
         }
     }
 
@@ -1650,14 +1670,22 @@ void jit_brgemm_kernel_t<Wmm>::store_accumulators_apply_post_ops(dim_t bd_block,
         } else {
             // TODO enable storing for gemv taul!
             printf("store data!\n");
+            printf("bd:%d\n", (int)bd);
+            //set_breakpoint();
             if (brg.is_gemv
                     && brg.transA) { // this works only for transA because we have to store many elements at a time
-                const bool is_gemv_tail
-                        = (bd + 1) == (bd_block + (brg.gemv_tail > 0));
+                const bool is_gemv_tail = is_bdb_tail && (brg.gemv_tail > 0)
+                        && (bd + 1) == (bd_block + (brg.gemv_tail > 0));
                 maybe_set_gemv_avx_tail_mask(is_gemv_tail);
                 printf("is_gemv_tail:%d\n", is_gemv_tail);
                 //                set_breakpoint();
                 if (is_gemv_tail) vmaskmovps(addr, vmm_tail_mask(), vmm);
+                else
+                    uni_vmovups(addr, vmm);
+                //                else store_data(brg.dt_d, vmm, reg_aux_D, D_offset(bd, ld),
+                //                            8 /* TODO: infer it */);
+                //set_breakpoint();
+
             } else {
                 const dim_t ld_block = is_tail ? brg.ldb_tail : brg.ld_block;
                 if (is_tail && types::data_type_size(brg.dt_b) == sizeof(float))
@@ -2518,7 +2546,7 @@ void jit_brgemm_kernel_t<Wmm>::gemv_microkernel(
     assert(brg.rd_block == 1);
 
     printf("is_bdb_tail:%d, brg.bdb_tail:%d\n", is_bdb_tail, brg.bdb_tail);
-
+    //set_breakpoint();
     vbroadcastss(gemv_load_b(), ptr[reg_aux_B]);
 
     // TODO: extend offset functions?
