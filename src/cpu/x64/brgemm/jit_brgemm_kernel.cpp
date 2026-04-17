@@ -109,7 +109,7 @@ struct jit_brgemm_kernel_t : public jit_base_brgemm_kernel_t {
             // provide information about what the tail size would have
             // been in a non-GEMV case.
             const dim_t tail_size = brg.is_gemv
-                    ? brg.load_dim % vreg_traits_t<Vmm>::vlen
+                    ? brg.gemv_tail //brg.load_dim % vreg_traits_t<Vmm>::vlen
                     : brg.ldb_tail;
 
             const binary_injector::rhs_arg_static_params_t rhs_sp {
@@ -117,7 +117,8 @@ struct jit_brgemm_kernel_t : public jit_base_brgemm_kernel_t {
                     this->r15, this->r13, preserve_gpr, preserve_vmm,
                     GET_OFF(post_ops_binary_rhs_arg_vec), GET_OFF(data_C_ptr_),
                     dst_md_wrapper, static_cast<size_t>(tail_size),
-                    ld_tail_mask, use_exact_tail_scalar_bcast};
+                    ld_tail_mask,
+                    use_exact_tail_scalar_bcast}; // XXX: ld_tail_mask????
 
             const binary_injector::static_params_t bsp {this->param1,
                     binary_injector::get_all_strategies_supported_by_injector(),
@@ -428,7 +429,7 @@ private:
     void apply_alpha_beta(
             dim_t bd_block, dim_t ld_block, bool is_ld_tail, bool is_bdb_tail);
     void apply_post_ops(dim_t bd_block, dim_t ld_block2,
-            dim_t ldb_and_bdb_offset, bool is_ld_tail);
+            dim_t ldb_and_bdb_offset, bool is_ld_tail, bool is_bdb_tail);
     void restore_A_B_matrices();
     void set_A_B_matrices();
 
@@ -1222,15 +1223,21 @@ void jit_brgemm_kernel_t<Wmm>::apply_alpha_beta(
 
 template <typename Wmm>
 void jit_brgemm_kernel_t<Wmm>::apply_post_ops(dim_t bd_block, dim_t ld_block2,
-        dim_t ldb_and_bdb_offset, bool is_ld_tail) {
+        dim_t ldb_and_bdb_offset, bool is_ld_tail, bool is_bdb_tail) {
     binary_injector::rhs_arg_dynamic_params_t rhs_arg_params;
     reg64_savable_guard_t registers_guard({{{&param1_backup}, true},
             {{&reg_aux_D_backup}, brg.is_runtime_ldd && bd_block > 1}});
 
     if (brg.with_binary) param1.restore();
 
-    const dim_t bd_block_shift = brg.is_runtime_ldd ? 1 : bd_block;
-    for (dim_t bd_block_idx = 0; bd_block_idx < bd_block;
+    const dim_t bd_block_shift
+            = brg.is_runtime_ldd ? 1 : bd_block + (brg.gemv_tail > 0);
+    printf("bd_block_shift:%d, bd_block:%d\n", (int)bd_block_shift,
+            (int)bd_block);
+    for (dim_t bd_block_idx = 0;
+            bd_block_idx < (brg.is_gemv && brg.transA
+                            ? bd_block + (brg.gemv_tail > 0)
+                            : bd_block); // TODO: adjust for gemv tail
             bd_block_idx += bd_block_shift) {
         dim_t bd_start = bd_block_idx;
         dim_t bd_end = bd_start + bd_block_shift;
@@ -1244,14 +1251,19 @@ void jit_brgemm_kernel_t<Wmm>::apply_post_ops(dim_t bd_block, dim_t ld_block2,
                 rhs_arg_params.vmm_idx_to_out_reg.emplace(vmm_idx, reg_aux_D);
                 rhs_arg_params.vmm_idx_to_out_elem_off_val.emplace(
                         vmm_idx, D_offset(bd, ld));
+                printf("bd:%d, D_offset(bd, ld):%d\n", (int)bd,
+                        (int)D_offset(bd, ld));
 
                 // Due to the binary injector's assumptions (see the comment for
                 // `binary_injector::rhs_arg_static_params_t`), we need to
                 // provide accumulator registers as if this were a non-GEMV
                 // case and a tail existed.
-                const bool has_tail = brg.is_gemv
-                        ? (brg.load_dim % vreg_traits_t<Vmm>::vlen)
-                        : is_ld_tail;
+                //const bool has_tail = brg.is_gemv
+                //        ? (brg.load_dim % vreg_traits_t<Vmm>::vlen)
+                //        : is_ld_tail;
+                printf("apply_post_ops: is_bdb_tail:%d\n", is_bdb_tail);
+                const bool has_tail
+                        = is_bdb_tail && bd + 1 == bd_end && brg.gemv_tail > 0;
                 if (has_tail) rhs_arg_params.vmm_tail_idx_.emplace(vmm_idx);
             }
         };
@@ -1538,7 +1550,8 @@ void jit_brgemm_kernel_t<Wmm>::store_accumulators_apply_post_ops(dim_t bd_block,
     if (brg.is_fp8_via_convert()) reg64_fp8_aux.restore();
 
     if (postops_injector_)
-        apply_post_ops(bd_block, ld_block2, ldb_and_bdb_offset, is_ld_tail);
+        apply_post_ops(bd_block, ld_block2, ldb_and_bdb_offset, is_ld_tail,
+                is_bdb_tail);
 
     if (brg.with_dst_scales) {
         reg_dst_scales.restore();
