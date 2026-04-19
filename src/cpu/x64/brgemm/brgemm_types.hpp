@@ -410,6 +410,26 @@ struct brgemm_desc_t {
         return transA ? bdb_tail / gemv_transa_simd_w : bdb_tail;
     }
 
+    bool gemv_acc_is_vector() const {
+        assert(is_gemv);
+        return transA;
+    }
+
+    bool gemv_is_row() const {
+        assert(is_gemv);
+        return treat_y_as_row;
+    }
+
+    dim_t gemv_num_acc_blocks(bool is_bdb_tail) const {
+        assert(is_gemv);
+        if (!gemv_acc_is_vector())
+            return is_bdb_tail ? gemv_bdb_tail() : gemv_bd_block();
+
+        const bool has_tail_acc = is_bdb_tail && gemv_tail > 0;
+        const dim_t full_accs = is_bdb_tail ? gemv_bdb_tail() : gemv_bd_block();
+        return full_accs + has_tail_acc;
+    }
+
     // return 'true' when FP8 MAC is not natively supported by the CPU ISA
     bool is_fp8_via_convert() const {
         return is_fp8
