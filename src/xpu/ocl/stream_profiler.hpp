@@ -35,6 +35,13 @@ struct stream_profiler_t : public xpu::stream_profiler_t {
 
     status_t get_aggregate_exec_timing(
             uint64_t stamp, double &duration_ms) const override;
+
+    status_t add_async_profiling_tracker(cl_command_queue q, cl_event &tracker);
+    status_t update_async_profiling_tracker(cl_event &tracker);
+    void wait_for_async_profiling_completion() override;
+
+private:
+    std::vector<cl_event> async_profiling_trackers_;
 };
 
 } // namespace ocl

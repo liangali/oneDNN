@@ -134,11 +134,8 @@ status_t stream_t::run_verbose_profiler(
         return status::success;
     }
 
-    // Captured output event acts as the anchor to track primitive execution
+    // Captured output event acts as the anchor to print profiling info
     cl_event out_evt = get_output_event();
-
-    // as the stamp count increments each time the profiler is unpaused, it
-    // also tracks the primitive executions.
     uint64_t curr_stamp = profiler_->stamp();
 
     if (!curr_stamp) {
@@ -150,36 +147,27 @@ status_t stream_t::run_verbose_profiler(
         return status::success;
     }
 
-    // An OpenCL marker is used for asynchronous printing of profiling info.
-    // The callback triggered after primitive execution calculates and prints
-    // the execution times.
-    cl_command_queue q = queue();
-    cl_event marker = nullptr;
-    cl_int err = xpu::ocl::clEnqueueMarkerWithWaitList(q, 1, &out_evt, &marker);
-
-    if (err != CL_SUCCESS || !marker) {
-        VWARN(primitive, exec,
-                "%s, profiling error: failed to attach OpenCL marker to output "
-                "event",
-                pd_info.c_str());
-        VPROF(start_ms, primitive, exec, VERBOSE_profile, pd_info.c_str(), 0.f);
-        return status::success;
-    }
-
-    xpu::stream_profiler_t *prof_ptr = profiler_.get();
+    // the tracker event ensures safe execution of asynchronous callbacks as primitives
+    // execute one-by-one
+    auto *ocl_profiler
+            = utils::downcast<xpu::ocl::stream_profiler_t *>(profiler_.get());
+    cl_event curr_tracker = nullptr;
+    CHECK(ocl_profiler->add_async_profiling_tracker(queue(), curr_tracker));
 
     struct payload_t {
-        xpu::stream_profiler_t *prof;
+        xpu::ocl::stream_profiler_t *prof;
         std::string info_str;
         double start;
         uint64_t stamp;
+        cl_event tracker;
     };
 
     std::unique_ptr<payload_t> payload(new payload_t());
-    payload->prof = prof_ptr;
+    payload->prof = ocl_profiler;
     payload->info_str = pd_info;
     payload->start = start_ms;
     payload->stamp = curr_stamp;
+    payload->tracker = curr_tracker;
     void *pluser = payload.get();
 
     // The prompt ensures the verbose headers are printed if they aren't
@@ -187,8 +175,8 @@ status_t stream_t::run_verbose_profiler(
     // result in access failures when printing engine-specific info.
     verbose_printf(verbose_t::exec_profile, "\r");
 
-    err = xpu::ocl::clSetEventCallback(
-            marker, CL_COMPLETE, [](cl_event ev, cl_int, void *user) {
+    cl_int err = xpu::ocl::clSetEventCallback(
+            out_evt, CL_COMPLETE, [](cl_event ev, cl_int, void *user) {
         std::unique_ptr<payload_t> hold(static_cast<payload_t *>(user));
 
         double duration_ms = 0.0;
@@ -202,15 +190,15 @@ status_t stream_t::run_verbose_profiler(
 
         VPROF(hold->start, primitive, exec, VERBOSE_profile,
                 hold->info_str.c_str(), duration_ms);
-
-        xpu::ocl::clReleaseEvent(ev);
+        if (hold->prof)
+            hold->prof->update_async_profiling_tracker(hold->tracker);
     }, pluser);
 
     if (err != CL_SUCCESS) {
-        xpu::ocl::clReleaseEvent(marker);
+        CHECK(ocl_profiler->update_async_profiling_tracker(curr_tracker));
         VWARN(primitive, exec,
                 "%s, profiling error: failed to set event callback for "
-                "printing exec info",
+                "async mode",
                 pd_info.c_str());
         VPROF(start_ms, primitive, exec, VERBOSE_profile, pd_info.c_str(), 0.f);
         return status::success;

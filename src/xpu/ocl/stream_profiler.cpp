@@ -105,6 +105,44 @@ status_t stream_profiler_t::get_aggregate_exec_timing(
     return status::success;
 }
 
+status_t stream_profiler_t::add_async_profiling_tracker(
+        cl_command_queue q, cl_event &tracker) {
+    cl_context cl_ctx;
+    OCL_CHECK(xpu::ocl::clGetCommandQueueInfo(
+            q, CL_QUEUE_CONTEXT, sizeof(cl_context), &cl_ctx, nullptr));
+    cl_int err;
+    // The tracker event is created for each queued primitive and held on to till the
+    // respective callbacks are completed
+    tracker = xpu::ocl::clCreateUserEvent(cl_ctx, &err);
+    OCL_CHECK(err);
+    std::lock_guard<std::recursive_mutex> lock(m_);
+    async_profiling_trackers_.push_back(tracker);
+
+    return status::success;
+}
+
+status_t stream_profiler_t::update_async_profiling_tracker(
+        cl_event &curr_tracker) {
+    if (curr_tracker) {
+        OCL_CHECK(xpu::ocl::clSetUserEventStatus(curr_tracker, CL_COMPLETE));
+    }
+
+    return status::success;
+}
+
+void stream_profiler_t::wait_for_async_profiling_completion() {
+    if (async_profiling_trackers_.empty()) return;
+    cl_int err = xpu::ocl::clWaitForEvents(
+            static_cast<cl_uint>(async_profiling_trackers_.size()),
+            async_profiling_trackers_.data());
+
+    for (std::vector<cl_event>::iterator ev = async_profiling_trackers_.begin();
+            ev != async_profiling_trackers_.end(); ++ev) {
+        if (*ev) { xpu::ocl::clReleaseEvent(*ev); }
+    }
+    async_profiling_trackers_.clear();
+}
+
 } // namespace ocl
 } // namespace xpu
 } // namespace impl
