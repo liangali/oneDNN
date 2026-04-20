@@ -169,6 +169,7 @@ struct GEMMProblem : public CommonProblem {
     Type Tao, Tbo, Tco;                             // Types for A/B/C offsets.
     Type Ta_scale, Tb_scale, Tc_scale;              // Types for A/B/C scales.
     Type Tag, Tbg;                                  // Types for A/B group sums.
+    Type Tacc;                                      // Type for minimum C Accumulation Precision.
 
     Scalar alpha, beta;                             // Scaling factors for A*B and C, respectively.
     MatrixAddressing A, B, C;                       // Addressing information for A/B/C matrices.

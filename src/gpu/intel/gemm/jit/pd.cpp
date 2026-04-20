@@ -575,8 +575,9 @@ status_t pd_t::init_GEMMProblem(
             || (post_ops_.find(primitive_kind::prelu) != -1);
 
     bool need_x32_acc = with_binary || !IMPLICATION(with_sum_, sum_at_begin_);
+    auto acc_mode = attr()->acc_mode_;
 
-    switch (attr()->acc_mode_) {
+    switch (acc_mode) {
         case accumulation_mode::any:
             if (!need_x32_acc) acc_type = data_type::undef;
             break;
@@ -585,6 +586,14 @@ status_t pd_t::init_GEMMProblem(
         case accumulation_mode::s32: acc_type = data_type::s32; break;
         default: break;
     }
+
+    // Minimum precision type for applying post-ops based on acc mode.
+    // Limits use of atomic add.
+    auto strict_acc = problem.Tc_ext.isFP() ? data_type::f32 : data_type::s32;
+    problem.Tacc = (acc_mode == accumulation_mode::strict)
+            ? convert_dnnl_to_kernel_type(strict_acc)
+            : convert_dnnl_to_kernel_type(acc_type);
+
     if (wei_decomp_) { acc_type = data_type::f32; }
 
     auto trans_co = trans_bias();
