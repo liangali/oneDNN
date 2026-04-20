@@ -132,7 +132,7 @@ status_t stream_profiler_t::update_async_profiling_tracker(
 
 void stream_profiler_t::wait_for_async_profiling_completion() {
     if (async_profiling_trackers_.empty()) return;
-    cl_int err = xpu::ocl::clWaitForEvents(
+    xpu::ocl::clWaitForEvents(
             static_cast<cl_uint>(async_profiling_trackers_.size()),
             async_profiling_trackers_.data());
 
