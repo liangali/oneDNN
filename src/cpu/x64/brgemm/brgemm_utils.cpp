@@ -254,7 +254,17 @@ int calculate_max_bcast_block(brgemm_desc_t *brg, const int adj_ld_block2) {
     // see vmm_zp_a_shift(), vmm_one_bytes() in brgemm kernel
     const int zp_a_comp_pads_regs = req_zp_a_comp_pads ? 2 : 0;
 
-    const int microkernel_regs = zp_a_comp_pads_regs + compensation_regs;
+    // IC weight scales in maybe_dot_product_with_per_k_scales() uses:
+    //   vmm_tmp(1) for scales (reused for both wei and src scales),
+    //   vmm_tmp(2) for tmp_acc.
+    //   vmm_tmp(3) is only needed for s8s8 compensation (vmm_s8s8_comp).
+    // Wei and src scales are applied sequentially and share vmm_tmp(1).
+    const int per_k_scales_regs = brg->has_per_k_scales()
+            ? (brg->req_s8s8_compensation ? 3 : 2)
+            : 0;
+
+    const int microkernel_regs
+            = zp_a_comp_pads_regs + compensation_regs + per_k_scales_regs;
 
     const auto microkernel_max_reg_count
             = max_isa_regs - microkernel_regs - load_regs - max_bcst_regs;
