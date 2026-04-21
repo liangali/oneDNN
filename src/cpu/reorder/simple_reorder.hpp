@@ -2410,7 +2410,7 @@ struct simple_reorder_impl_t<SIMPLE_REORDER_TEMPL_CALL,
                                   src_scales, src_scales_off);
             }
 
-            int src_zp_val = 0; // Avoid clashing with the one defined for rest.
+            float src_zp_val = 0.0f; // Avoid clashing with the one defined for rest.
             if (with_src_zps) {
                 const dim_t src_zps_off
                         = get_quant_off(input_idx, ndims, src_zps_mask,
@@ -2421,7 +2421,11 @@ struct simple_reorder_impl_t<SIMPLE_REORDER_TEMPL_CALL,
 
             const auto i_off = input_d.off_l(idx);
             const auto o_off = output_d.off_l(idx);
-            output[o_off] = src_scale * (wspace[i_off] - src_zp_val);
+            if (src_zps_d.data_type() == dnnl_f16
+                    || src_zps_d.data_type() == dnnl_bf16)
+                output[o_off] = src_scale * wspace[i_off] - src_zp_val;
+            else
+                output[o_off] = src_scale * (wspace[i_off] - src_zp_val);
         });
 
         return status::success;
@@ -2648,7 +2652,7 @@ struct simple_reorder_impl_t<SIMPLE_REORDER_TEMPL_CALL,
                 dst_scale = dst_scales[dst_scales_off];
             }
 
-            int src_zp_val = 0; // Avoid clashing with the one defined for rest.
+            float src_zp_val = 0.0f; // Avoid clashing with the one defined for rest.
             if (with_src_zps) {
                 const dim_t src_zps_off
                         = get_quant_off(input_idx, ndims, src_zps_mask,
@@ -2659,7 +2663,10 @@ struct simple_reorder_impl_t<SIMPLE_REORDER_TEMPL_CALL,
 
             const auto i_off = input_d.off_l(idx);
             const auto o_off = output_d.off_l(idx);
-            float d = src_scale * (input[i_off] - src_zp_val);
+            float d = (src_zps_d.data_type() == dnnl_f16
+                              || src_zps_d.data_type() == dnnl_bf16)
+                    ? src_scale * input[i_off] - src_zp_val
+                    : src_scale * (input[i_off] - src_zp_val);
             if (beta) d += beta * output[o_off];
             d = d / dst_scale + dst_zp;
             output[o_off] = _qz_a1b0<data_type::f32, type_o>()(d);
