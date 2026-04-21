@@ -284,6 +284,7 @@ void Generator<hw>::gemmRepack2DOffsetData(Type Text, const RegisterLayout &layo
     bool s4 = (Text == Type::s4);
     bool s8 = (Ts == Type::s8);
     bool u8 = (Ts == Type::u8);
+    bool n_fp = !(Ts == Type::bf16 || Ts == Type::f16);
 
     bool int4SpecialPath = Text.isInt4() && Td == Type::f16;
     auto tmpType = Td;
@@ -318,11 +319,91 @@ void Generator<hw>::gemmRepack2DOffsetData(Type Text, const RegisterLayout &layo
             map(hw, Type::f16, dst, dst, strategy, [&](int esize, RegData r, RegData _) {
                 mul(esize, r, r, Immediate::hf(0x6C00));
             });
-        } else {
+        } else if (n_fp) {
             map(hw, Type::f16, dst, dst, strategy, [&](int esize, RegData r, RegData _) {
                 s4 ? mad(esize, r, Immediate::hf(0x1800), r, Immediate::hf(0x0C00))     // 0x1800 = 8 * 2^(-12)
                    : mul(esize, r,                        r, Immediate::hf(0x0C00));    // 0x0C00 = 2^(-12)
             });
+        }
+    }
+}
+
+template <HW hw>
+void Generator<hw>::gemmDequantizeOperation(bool doA, Type T, Type Tq,
+                                            const RegisterLayout &layout, const RegisterLayout &slayout,
+                                            const RegisterLayout &olayout,
+                                            const GRFMultirange &regs, const GRFMultirange &sregs,
+                                            const GRFMultirange &oregs,
+                                            int h, int kab_load, int kq_load, const GEMMProblem &problem,
+                                            const CommonStrategy &strategy, CommonState &state)
+{
+    MAYBE_UNUSED(strategy);
+    MAYBE_UNUSED(state);
+
+    int xqGroupK  = doA ? problem.aqGroupK : problem.bqGroupK;
+    int xqGroupMN = doA ? problem.aqGroupM : problem.bqGroupN;
+
+    bool broadcast = (slayout.rows() * slayout.cols()) == 1;
+    bool mnGrouped = (xqGroupMN > 1);
+    bool colMajor = layout.colMajor();
+
+    for (auto &block: layout) {
+        auto crosspack = block.crosspack;
+        int nx = colMajor ? block.nr : block.nc;
+        int ny = colMajor ? block.nc : block.nr;
+
+        auto h_block = align_down(h, kab_load) + (doA ? block.offsetC : block.offsetR);
+        auto mn_block = doA ? block.offsetR : block.offsetC;
+
+        for (int y0 = 0; y0 < ny; y0 += (mnGrouped ? 1 : crosspack)) {
+        for (int x0 = 0; x0 < nx; ) {
+            auto ii0 = colMajor ? x0 : y0;
+            auto jj0 = colMajor ? y0 : x0;
+
+            auto h_final = h_block + (doA ? jj0 : ii0);
+            auto mn_final = mn_block + (doA ? ii0 : jj0);
+            auto mnq = mn_final / xqGroupMN;
+            auto hq = (h_final % kq_load) / xqGroupK;
+
+            auto io0 = doA ? mnq : hq;
+            auto jo0 = doA ? hq : mnq;
+            if (broadcast) io0 = jo0 = 0;
+
+            int ne, neq;
+            const RegisterBlock *sblock, *oblock;
+            auto data = block.find(T, ii0, jj0, regs, &ne);
+            auto sdata = slayout.find(io0, jo0, sregs, &neq, &sblock);
+            auto odata = olayout.find(io0, jo0, oregs, &neq, &oblock);
+
+            int strides = 1;
+            int strideo = 1;
+            int strided = 1;
+            if (broadcast) {
+                strideo = 0;
+                strides = 0;
+            } else if (mnGrouped) {
+                strided = crosspack;
+                strides = 0;
+                strideo = 0;
+                ne = std::min(ne, xqGroupMN - (mn_final % xqGroupMN));
+            } else if (colMajor == doA) {
+                ne = std::min(ne, neq);
+                if (sblock->crosspack * Tq < crosspack * T) stub();
+                if (oblock->crosspack * Tq < crosspack * T) stub();
+            } else {
+                ne = std::min(ne, xqGroupK);
+                strides = 0;
+                strideo = 0;
+            }
+
+            int maxSIMD = 32;
+            if (Tq == Type::f32) maxSIMD = elementsPerGRF(hw, Tq);
+            int simd = std::min({ne * crosspack / strided,
+                    2 * elementsPerGRF(hw, T) / strided, maxSIMD});
+            mad(simd, data(strided), -odata(strideo), data(strided),
+                    sdata(strides));
+            x0 += simd * strided / crosspack;
+        }
         }
     }
 }
@@ -491,9 +572,17 @@ void Generator<hw>::dequantizeInt4(bool doA, const RegisterLayout &layoutSrc, co
     // 3) Reinterpret u16 data as denormal f16, scale into normal range and subtract (rescaled) offsets if available.
     //     The required rescaling factor (2^24) is necessarily outside f16 range,
     //     so two multiplications are needed.
-    if (!layoutOffset.empty()) {
+    const auto Toffset = layoutOffset.empty() ? Type::invalid : layoutOffset.type();
+    const auto Tscale = layoutScale.empty() ? Type::invalid : layoutScale.type();
+    bool mad_scale_offset = problem && !layoutOffset.empty() && !layoutScale.empty()
+            && Tscale == Toffset
+            && (Toffset == Type::bf16 || Toffset == Type::f16);
+
+    if (!layoutOffset.empty() && !mad_scale_offset) {
         if (!problem) stub();
-        gemmDequantizeOperation(doA, Type::f16, Type::f16, BinaryOp::ScaleSub, *effLayoutDst, layoutOffset, *effDst, offset, h, kab_load, kq_load, *problem, strategy, state);
+        gemmDequantizeOperation(doA, Type::f16, Toffset, BinaryOp::ScaleSub,
+                *effLayoutDst, layoutOffset, *effDst, offset, h, kab_load,
+                kq_load, *problem, strategy, state);
     } else {
         map(hw, Type::f16, *effDst, *effLayoutDst, strategy, [&](int esize, RegData r) {
             s4 ? mad(esize, r, Immediate::hf(0x9800), r, Immediate::hf(0x6C00)) /* 0x9800 = -8*2^(-12), 0x6C00 = 2^12 */
@@ -508,9 +597,17 @@ void Generator<hw>::dequantizeInt4(bool doA, const RegisterLayout &layoutSrc, co
 
     // 5) Apply scales if present. If the scales are not too large (absolute value < 128),
     //      this could be merged into the previous multiplication.
-    if (!f32 && !layoutScale.empty()) {
+    if (!layoutScale.empty()) {
         if (!problem) stub();
-        gemmDequantizeOperation(doA, Type::f16, Type::f16, BinaryOp::Mul, *effLayoutDst, layoutScale, *effDst, scale, h, kab_load, kq_load, *problem, strategy, state);
+        if (mad_scale_offset) {
+            gemmDequantizeOperation(doA, Type::f16, Tscale, *effLayoutDst,
+                    layoutScale, layoutOffset, *effDst, scale, offset, h,
+                    kab_load, kq_load, *problem, strategy, state);
+        } else if (!f32) {
+            gemmDequantizeOperation(doA, Type::f16, Tscale, BinaryOp::Mul,
+                    *effLayoutDst, layoutScale, *effDst, scale, h, kab_load,
+                    kq_load, *problem, strategy, state);
+        }
     }
 
     // 6) Convert to dst type if needed.
@@ -520,9 +617,11 @@ void Generator<hw>::dequantizeInt4(bool doA, const RegisterLayout &layoutSrc, co
     }
 
     // 7) Apply scales for f32 after f16->f32 upconversion.
-    if (f32 && !layoutScale.empty()) {
+    if (f32 && !layoutScale.empty() && !mad_scale_offset) {
         if (!problem) stub();
-        gemmDequantizeOperation(doA, Type::f32, Type::f32, BinaryOp::Mul, layoutDst, layoutScale, dst, scale, h, kab_load, kq_load, *problem, strategy, state);
+        gemmDequantizeOperation(doA, Type::f32, Tscale, BinaryOp::Mul,
+                layoutDst, layoutScale, dst, scale, h, kab_load, kq_load,
+                *problem, strategy, state);
     }
 }
 
