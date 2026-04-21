@@ -19,3 +19,8 @@
 --attr-zero-points=,src:per_tensor:s4:1x16
 12x25x7x32_n"4d_scale_w_d1_group:0"
 128x16_n"2d_scale_w_d1_group:0"
+
+--attr-scales=,src:per_tensor:f16:1x16
+--attr-zero-points=,src:per_tensor:f16:1x16
+12x25x7x32_n"4d_scale_w_d1_group:0"
+128x16_n"2d_scale_w_d1_group:0"

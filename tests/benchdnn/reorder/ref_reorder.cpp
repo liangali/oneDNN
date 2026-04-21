@@ -49,6 +49,8 @@ void compute_ref(const prb_t *prb, dir_t dir, const args_t &args,
     const auto nelems = src.nelems();
     // This is native to reorder zero point which comes from reorder attributes.
     const bool has_src_zp = !prb->attr.zero_points.get(DNNL_ARG_SRC).is_def();
+    const auto src_zp_dt = prb->attr.zero_points.get(DNNL_ARG_SRC).dt;
+    const bool fp_src_zp = src_zp_dt == dnnl_f16 || src_zp_dt == dnnl_bf16;
     const bool has_dst_zp = !prb->attr.zero_points.get(DNNL_ARG_DST).is_def();
     const int src_zp_mask = has_src_zp
             ? prb->attr.zero_points.get_mask(
@@ -73,13 +75,13 @@ void compute_ref(const prb_t *prb, dir_t dir, const args_t &args,
     const float s8_scale_factor = need_s8_comp ? reorder_rescale_factor() : 1.f;
 
     benchdnn_parallel_nd(nelems, [&](int64_t idx) {
-        int src_zp = 0;
+        float src_zp = 0.0f;
         if (has_src_zp) {
             const auto src_zp_idx
                     = src.get_idx(idx, src_zp_mask, src.ndims(), src_zp_groups);
-            src_zp = src_zps.get_elem(src_zp_idx);
+            src_zp = src_zps.get_f32_elem(src_zp_idx);
         }
-        float s = src.get_f32_elem(idx) - src_zp;
+        float s = src.get_f32_elem(idx);
         float d = 0;
         if (beta_idx >= 0) d = dst.get_f32_elem(idx) - dst_zero_point;
 
@@ -93,7 +95,12 @@ void compute_ref(const prb_t *prb, dir_t dir, const args_t &args,
             int64_t dst_mask_idx = dst.get_idx(idx, dst_scale_mask);
             dst_scale = dst_scales.get_f32_elem(dst_mask_idx);
         }
-        float value = (s8_scale_factor * src_scale * s + beta * d) / dst_scale
+        float value = fp_src_zp
+            ? (s8_scale_factor * src_scale * s - src_zp + beta * d)
+                / dst_scale
+                + dst_zero_point
+            : (s8_scale_factor * src_scale * (s - src_zp) + beta * d)
+                / dst_scale
                 + dst_zero_point;
         value = maybe_saturate(dst_dt, value);
         if (dst_dt == dnnl_s32 && value >= (float)INT_MAX)
