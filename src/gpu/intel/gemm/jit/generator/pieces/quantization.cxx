@@ -572,8 +572,8 @@ void Generator<hw>::dequantizeInt4(bool doA, const RegisterLayout &layoutSrc, co
     // 3) Reinterpret u16 data as denormal f16, scale into normal range and subtract (rescaled) offsets if available.
     //     The required rescaling factor (2^24) is necessarily outside f16 range,
     //     so two multiplications are needed.
-    const auto Toffset = layoutOffset.empty() ? Type::invalid : layoutOffset.type();
-    const auto Tscale = layoutScale.empty() ? Type::invalid : layoutScale.type();
+    const Type Toffset = layoutOffset.empty() ? Type(Type::invalid) : layoutOffset.type();
+    const Type Tscale  = layoutScale.empty()  ? Type(Type::invalid) : layoutScale.type();
     bool mad_scale_offset = problem && !layoutOffset.empty() && !layoutScale.empty()
             && Tscale == Toffset
             && (Toffset == Type::bf16 || Toffset == Type::f16);
