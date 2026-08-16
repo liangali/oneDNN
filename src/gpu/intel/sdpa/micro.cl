@@ -730,7 +730,9 @@ micro_sdpa(const global KEY_DATA_T *K, const global QRY_DATA_T *Q,
 
         /* Prepare k mask: NaN in bounds, -inf out of bounds */
         kmask_tile_type_float k_mask;
-        bool needs_k_mask = remainder_k;
+        /* [opt] only the last k block can contain out-of-bounds keys;
+           applying the mask on earlier iterations is an identity min pass */
+        bool needs_k_mask = remainder_k && last;
 #if WITH_CAUSAL_MASK
         /* for q==1 with GQA batching, all queries are at sequence position 0,
            use uniform k_mask instead of varying per-column */
@@ -876,12 +878,27 @@ micro_sdpa(const global KEY_DATA_T *K, const global QRY_DATA_T *Q,
         tile_elementwise(S_max_tile, set_zeros);
 #endif
 
-        tile_vbroadcast_sub(&S_tile, S_max_tile);
-
-/* Scale + exponentiate */
-#define scaled_exp(x) native_vexp2(x *scale * 1.442695f)
-        tile_elementwise(S_tile, scaled_exp);
-#undef scaled_exp
+        /* Fused: S = exp2((S - max) * scale * log2e) in a single tile walk
+           (same rounding order as separate sub+exp passes: (s-m)*scale, then
+           *1.442695f, then exp2). */
+        _Pragma("unroll")
+        for (int j = 0; j < ugemm_kq_c_type_block1 * ugemm_kq_c_type_nblock1;
+                j++) {
+            _Pragma("unroll")
+            for (int i0 = 0;
+                    i0 < ugemm_kq_c_type_block0 * ugemm_kq_c_type_nblock0;
+                    i0 += SUBGROUP_SIZE) {
+                float mval = tile_access(S_max_tile, i0, 0, SUBGROUP_SIZE,
+                        ugemm_kq_sg_tile_n, 1, 1);
+                float sval = tile_access(S_tile, i0, j, SUBGROUP_SIZE,
+                        ugemm_kq_c_type_block0, ugemm_kq_c_type_block1,
+                        ugemm_kq_c_type_nblock0);
+                tile_access(S_tile, i0, j, SUBGROUP_SIZE,
+                        ugemm_kq_c_type_block0, ugemm_kq_c_type_block1,
+                        ugemm_kq_c_type_nblock0)
+                        = native_exp2((sval - mval) * scale * 1.442695f);
+            }
+        }
 
         /* Accumulate sums. S tile is transposed for easy summation. */
         s_sum_tile_type S_sum_tile1;
