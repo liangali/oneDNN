@@ -653,17 +653,25 @@ micro_sdpa(const global KEY_DATA_T *K, const global QRY_DATA_T *Q,
 #endif
 
     if (k0end > 0) {
-        /* Initialize S column sums in SLM to -inf */
+        /* Initialize S column maxes in SLM to -inf. S_max_slm holds
+           ugemm_kq_wg_tile_n floats = n_col_chunks sub-group chunks; when
+           SUBGROUP_SIZE * sg_per_wg exceeds the tile width the higher
+           sub-groups own no chunk and must not write past S_max_slm into
+           ugemm_slm (that store is unordered against faster sub-groups'
+           first ugemm_kq under Q_ARRIVE_AWAIT_BARRIER). */
         const uint n_col_sg
                 = DIV_UP(ugemm_kq_wg_tile_n, SUBGROUP_SIZE * sg_per_wg);
+        const uint n_col_chunks = DIV_UP(ugemm_kq_wg_tile_n, SUBGROUP_SIZE);
         const float neg_inf = -INFINITY;
 
 #pragma unroll
-        for (int q = 0; q < n_col_sg; q++)
-            intel_sub_group_block_write(
-                    (local uint *)&S_max_slm[(q + sg_ij * n_col_sg)
-                            * SUBGROUP_SIZE],
-                    as_uint(neg_inf));
+        for (int q = 0; q < n_col_sg; q++) {
+            const uint chunk = q + sg_ij * n_col_sg;
+            if (chunk < n_col_chunks)
+                intel_sub_group_block_write(
+                        (local uint *)&S_max_slm[chunk * SUBGROUP_SIZE],
+                        as_uint(neg_inf));
+        }
     }
 
 #if VS_F16_ACC
